@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
+use std::sync::mpsc;
+use std::thread;
 
 use clap::{Parser, Subcommand};
 use yahoo_finance_api as yahoo;
 use yahoo_finance_api::Quote;
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use time::macros::datetime;
 use time::OffsetDateTime;
 use tokio_test;
@@ -44,12 +46,13 @@ enum Commands {
     }
 }
 
+#[derive(Clone)]
 struct TickeredQuote {
     ticker: String,
     quote: Quote,
 }
 const STARTING_CASH: f32 = 100000.0;
-const START: OffsetDateTime = datetime!(2019-2-15 0:00:00.00 UTC);
+const START: OffsetDateTime = datetime!(2014-2-15 0:00:00.00 UTC);
 const END: OffsetDateTime = datetime!(2024-2-14 23:59:59.99 UTC);
 
 fn main() {
@@ -79,26 +82,32 @@ fn main() {
         },
         Some(Commands::Simulate { tickers }) => {
             let quotes = get_quotes_for_tickers(tickers);
+            let closes = get_closes_for_tickers(tickers);
             let mut best_net_worth: f32 = 0.0;
-            let mut best_buy_when: f32;
-            let mut best_sell_when: f32;
-            let mut best_buy_pct: f32;
+            let (tx, rx) = mpsc::channel();
+
             for b in 10u8..50 {
                 let buy_when = f32::from(b) * 0.1;
                 for s in 10u8..80 {
                     let sell_when = f32::from(s) * 0.1;
-                    for bp in 1u8..=8 {
-                        let buy_pct = f32::from(bp) * 0.1;
-                        let (cash, holdings) = simulate(&quotes, buy_pct, buy_when, sell_when);
-                        let net_worth = calc_net_worth(cash, holdings);
-                        if net_worth > best_net_worth {
-                            best_net_worth = net_worth;
-                            best_buy_when = buy_when;
-                            best_buy_pct = buy_pct;
-                            best_sell_when = sell_when;
-                            println!("Hit best_net_worth: {:?}, buy_when: {:?}, sell_when: {:?}, buy_pct: {:?}", best_net_worth, best_buy_when, best_sell_when, best_buy_pct);
-                        }
+                    for buy_increment in [1000.0, 3333.0, 5000.0, 10000.0, 20000.0, 33333.0, 50000.0, 100000.0 as f32] {
+                        let tx = tx.clone();
+                        let quotes = quotes.clone();
+                        let closes = closes.clone();
+                        thread::spawn(move || {
+                            let (holdings, cash_spent, cash_made) = simulate(&quotes, buy_increment, buy_when, sell_when);
+                            let net_worth = calc_net_worth_with_closes(cash_made - cash_spent, holdings, closes);
+                            let _ = tx.send((net_worth, buy_when, sell_when, buy_increment));
+                        });
                     }
+                }
+            }
+            drop(tx);
+
+            while let Ok((net_worth, buy_when, sell_when, buy_increment)) = rx.recv() {
+                if net_worth > best_net_worth {
+                    best_net_worth = net_worth;
+                    println!("Hit best_net_worth: {:?}, buy_when: {:?}, sell_when: {:?}, buy_increment: {:?}", best_net_worth, buy_when, sell_when, buy_increment);
                 }
             }
             println!("Buy & Hold: {:?}", calc_buy_and_hold_strategy(tickers))
@@ -126,6 +135,26 @@ fn calc_net_worth(cash: f32, holdings: HashMap<String, f32>) -> f32 {
         net_worth = net_worth + (*q * quote.close as f32)
     }
     net_worth
+}
+
+fn calc_net_worth_with_closes(cash: f32, holdings: HashMap<String, f32>, closes: HashMap<String, f32>) -> f32 {
+    let mut net_worth = cash;
+    for (h, q) in holdings.iter() {
+        let close = closes.get(h).unwrap();
+        net_worth += *q * close;
+    }
+    net_worth  
+}
+
+fn get_closes_for_tickers(tickers: &Vec<String>) -> HashMap<String, f32> {
+    let provider = yahoo::YahooConnector::new();
+    let mut closes: HashMap<String, f32> = HashMap::new();
+    for t in tickers.iter() {
+        let response = tokio_test::block_on(provider.get_latest_quotes(t, "1d")).unwrap();
+        let quote = response.last_quote().unwrap();
+        closes.insert(t.to_string(), quote.close as f32);
+    }
+    closes
 }
 
 fn get_quotes_for_tickers(tickers: &Vec<String>) -> Vec<TickeredQuote> {
@@ -160,37 +189,54 @@ fn calc_buy_and_hold_strategy(tickers: &Vec<String>) -> f32 {
     calc_net_worth(0.0, holdings)
 }
 
-fn simulate(quotes: &Vec<TickeredQuote>, buy_pct: f32, buy_when: f32, sell_when: f32) -> (f32, HashMap<String, f32>) {
-    let mut cash = STARTING_CASH;
-    let mut prev_close_for: HashMap<String, f32> = HashMap::new();
+fn simulate(quotes: &Vec<TickeredQuote>, buy_increment: f32, buy_when: f32, sell_when: f32) -> (HashMap<String, f32>, f32, f32) {
     let mut holdings: HashMap<String, f32> = HashMap::new();
+    let mut purchases: HashMap<String, HashMap<DateTime<Utc>, f32>> = HashMap::new();
+    let mut cash_spent: f32 = 0.0;
+    let mut cash_made: f32 = 0.0;
+    let mut prev_closes: HashMap<String, f32> = HashMap::new();
+    let cash_per_purchase: f32 = buy_increment;
+    let cash_limit: f32 = STARTING_CASH;
     for q in quotes.iter() {
-        match prev_close_for.get(&q.ticker) {
-            Some(prev_close) => {
-                let pct: f32 = (q.quote.close as f32 - prev_close) * 100.0 / prev_close;
-                if pct <= -1.0 * buy_when { // buy low
-                    let amount_to_buy = (buy_pct * cash) / (q.quote.close as f32);
-                    cash = cash - (cash * buy_pct);
-                    match holdings.get(&q.ticker) {
-                        Some(amount_owned) => holdings.insert(q.ticker.to_string(), amount_owned + amount_to_buy),
-                        None => holdings.insert(q.ticker.to_string(), amount_to_buy),
-                    };
-                };
-                if pct >= sell_when { // sell high
-                    match holdings.get(&q.ticker) {
-                        Some(amount_owned) => {
-                            cash = cash + (amount_owned * q.quote.close as f32);
-                            holdings.insert(q.ticker.to_string(), 0.0);
-                        },
-                        None => {},
-                    }
-                }
-            },
-            None => {},
+        let date = Utc.timestamp_opt(q.quote.timestamp as i64, 0).unwrap();
+        let prev_close = match prev_closes.get(&q.ticker) {
+            Some(a) => a,
+            None => {
+                prev_closes.insert(q.ticker.clone(), q.quote.close as f32);
+                continue;
+            },          
         };
-        prev_close_for.insert(q.ticker.to_string(), q.quote.close as f32);
-    };
-    (cash, holdings)
+        let pct: f32 = (q.quote.close as f32 - prev_close) * 100.0 / prev_close;
+        if pct <= -1.0 * buy_when && cash_spent + cash_per_purchase - cash_made < cash_limit { // buy low
+            let amount_to_buy = cash_per_purchase / (q.quote.close as f32);
+            cash_spent += cash_per_purchase;
+            match holdings.get(&q.ticker) {
+                Some(amount_owned) => holdings.insert(q.ticker.clone(), amount_owned + amount_to_buy),
+                None => holdings.insert(q.ticker.clone(), amount_to_buy),
+            };
+            let mut purchase_map: HashMap<DateTime<Utc>, f32> = purchases.get(&q.ticker).unwrap_or(&HashMap::new()).clone();
+            purchase_map.insert(date, amount_to_buy);
+            purchases.insert(q.ticker.clone(), purchase_map.clone());
+        };
+        if pct >= sell_when { // sell high
+            let mut to_remove: Vec<DateTime<Utc>> = Vec::new();
+            let mut purchase_map: HashMap<DateTime<Utc>, f32> = purchases.get(&q.ticker).unwrap_or(&HashMap::new()).clone();
+            for (k, v) in purchase_map.iter() {
+                if *k <= date - Duration::from_secs(60 * 60 * 24 * 365) { // now - 1yr
+                    // we can sell
+                    cash_made += *v * q.quote.close as f32;
+                    holdings.insert(q.ticker.clone(),holdings.get(&q.ticker).unwrap() - *v);
+                    to_remove.push(*k);
+                }
+            }
+            for k in to_remove.iter() {
+                purchase_map.remove(k);
+            }
+            purchases.insert(q.ticker.clone(), purchase_map);
+        }
+        prev_closes.insert(q.ticker.clone(), q.quote.close as f32);
+    }
+    (holdings, cash_spent, cash_made)
 }
 
 fn get_latest_change(ticker: &String) -> f32 {

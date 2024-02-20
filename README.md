@@ -41,8 +41,10 @@ Simulates multiple buying/selling strategies, optimizing for
   * buy_when: how much the stock loses in a single day to trigger a buy
   * sell_when: how much the stock gains in a single day to trigger a sell
   * buy_pct: how much of the available cash to buy with
+
 By default operates over 5yr of daily close prices.
-Can provide multiple tickers to consider.
+
+Can provide multiple tickers to consider:
 ```
 ./target/debug/trader simulate --tickers GOOGL --tickers AMZN --tickers MSFT
 Hit best_net_worth: 161183.92, buy_when: 1.0, sell_when: 1.0, buy_pct: 0.1
@@ -54,7 +56,7 @@ Hit best_net_worth: 630542.0, buy_when: 2.5, sell_when: 3.1000001, buy_pct: 0.8
 ```
 
 ### alert
-Email an alert when buy/sell thresholds are met.
+Email an alert when buy/sell thresholds are met:
 
 ```
 ./target/release/trader alert --tickers GOOGL --buy-when 1.0 --sell-when 1.0

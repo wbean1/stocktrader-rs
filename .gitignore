@@ -1,2 +1,4 @@
 .env
+run.sh
+/logs
 /target
