@@ -83,7 +83,6 @@ fn main() {
         Some(Commands::Simulate { tickers }) => {
             let quotes = get_quotes_for_tickers(tickers);
             let closes = get_closes_for_tickers(tickers);
-            let mut best_net_worth: f32 = 0.0;
             let (tx, rx) = mpsc::channel();
 
             for b in 10u8..50 {
@@ -104,13 +103,20 @@ fn main() {
             }
             drop(tx);
 
+            let mut best_net_worth: f32 = 0.0;
+            let mut best_buy_when: f32 = 0.0;
+            let mut best_sell_when: f32 = 0.0;
+            let mut best_buy_increment: f32 = 0.0;
             while let Ok((net_worth, buy_when, sell_when, buy_increment)) = rx.recv() {
                 if net_worth > best_net_worth {
                     best_net_worth = net_worth;
-                    println!("Hit best_net_worth: {:?}, buy_when: {:?}, sell_when: {:?}, buy_increment: {:?}", best_net_worth, buy_when, sell_when, buy_increment);
+                    best_buy_when = buy_when;
+                    best_sell_when = sell_when;
+                    best_buy_increment = buy_increment;
                 }
             }
-            println!("Buy & Hold: {:?}", calc_buy_and_hold_strategy(tickers))
+            println!("Best Net-Worth: ${:.2}, buy_when: {:?}%, sell_when: {:?}%, buy_increment: ${:.2}", best_net_worth, -1.0 * best_buy_when, best_sell_when, best_buy_increment);
+            println!("Buy & Hold: ${:.2}", calc_buy_and_hold_strategy(tickers, &quotes, closes))
         },
         Some(Commands::Alert { tickers, buy_when, sell_when }) => {
             for ticker in tickers.iter() {
@@ -123,18 +129,6 @@ fn main() {
         },
         None => {}
     }
-}
-
-fn calc_net_worth(cash: f32, holdings: HashMap<String, f32>) -> f32 {
-    let mut net_worth = cash;
-    let provider = yahoo::YahooConnector::new();
-
-    for (h, q) in holdings.iter() {
-        let response = tokio_test::block_on(provider.get_latest_quotes(h, "1d")).unwrap();
-        let quote = response.last_quote().unwrap();
-        net_worth = net_worth + (*q * quote.close as f32)
-    }
-    net_worth
 }
 
 fn calc_net_worth_with_closes(cash: f32, holdings: HashMap<String, f32>, closes: HashMap<String, f32>) -> f32 {
@@ -174,19 +168,19 @@ fn get_quotes_for_tickers(tickers: &Vec<String>) -> Vec<TickeredQuote> {
     all_quotes
 }
 
-fn calc_buy_and_hold_strategy(tickers: &Vec<String>) -> f32 {
-    let provider = yahoo::YahooConnector::new();
+fn calc_buy_and_hold_strategy(tickers: &Vec<String>, quotes: &Vec<TickeredQuote>, closes: HashMap<String, f32>) -> f32 {
     let amount_per_ticker = STARTING_CASH / tickers.len() as f32;
     let mut holdings: HashMap<String, f32> = HashMap::new();
     for t in tickers.iter() {
-        let response = tokio_test::block_on(provider.get_quote_history(t, START, END)).unwrap();
-        let quotes = response.quotes().unwrap();
-        let q = quotes.first().unwrap();
-        let amount_to_buy = amount_per_ticker / q.close as f32;
-        holdings.insert(t.to_string(), amount_to_buy);
-
+        for q in quotes.iter() {
+            if q.ticker == *t {
+                let amount_to_buy = amount_per_ticker / q.quote.close as f32;
+                holdings.insert(t.to_string(), amount_to_buy);
+                break;
+            }
+        }
     }
-    calc_net_worth(0.0, holdings)
+    calc_net_worth_with_closes(0.0, holdings, closes)
 }
 
 fn simulate(quotes: &Vec<TickeredQuote>, buy_increment: f32, buy_when: f32, sell_when: f32) -> (HashMap<String, f32>, f32, f32) {

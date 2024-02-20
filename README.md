@@ -38,21 +38,23 @@ date        | close      | pct
 ### simulate
 
 Simulates multiple buying/selling strategies, optimizing for
-  * buy_when: how much the stock loses in a single day to trigger a buy
-  * sell_when: how much the stock gains in a single day to trigger a sell
-  * buy_pct: how much of the available cash to buy with
+  * `buy_when`: how much the stock loses in a single day to trigger a buy
+  * `sell_when`: how much the stock gains in a single day to trigger a sell
+  * `buy_increment`: how much cash to spend on each triggerring purchase
 
-By default operates over 5yr of daily close prices.
+By default operates over 10 years of daily close prices.
+
+Obeys the following rules:
+  * stocks bought cannot be resold within 1yr, for short-term cap gains tax reasons
+  * maximum $100,000 cash debt; selling replenishes cash debt.
+
+Provides a baseline `Buy & Hold` strategy for comparison.
 
 Can provide multiple tickers to consider:
 ```
-./target/debug/trader simulate --tickers GOOGL --tickers AMZN --tickers MSFT
-Hit best_net_worth: 161183.92, buy_when: 1.0, sell_when: 1.0, buy_pct: 0.1
-Hit best_net_worth: 201417.27, buy_when: 1.0, sell_when: 1.0, buy_pct: 0.2
-Hit best_net_worth: 222928.31, buy_when: 1.0, sell_when: 1.0, buy_pct: 0.3
-Hit best_net_worth: 231473.88, buy_when: 1.0, sell_when: 1.0, buy_pct: 0.4
-...
-Hit best_net_worth: 630542.0, buy_when: 2.5, sell_when: 3.1000001, buy_pct: 0.8
+./target/debug/trader simulate --tickers GOOGL --tickers MSFT --tickers AMZN
+Best Net-Worth: $1170030.88, buy_when: -4.8%, sell_when: 5.0%, buy_increment: $33333.00
+Buy & Hold: $823931.75
 ```
 
 ### alert
