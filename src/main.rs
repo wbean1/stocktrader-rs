@@ -52,15 +52,15 @@ struct TickeredQuote {
     quote: Quote,
 }
 const STARTING_CASH: f32 = 100000.0;
-const START: OffsetDateTime = datetime!(2014-2-15 0:00:00.00 UTC);
-const END: OffsetDateTime = datetime!(2024-2-14 23:59:59.99 UTC);
+const START: OffsetDateTime = datetime!(2016-04-16 0:00:00.00 UTC);
+const END: OffsetDateTime = datetime!(2026-04-16 23:59:59.99 UTC);
 
 fn main() {
     let args = Args::parse();
     match &args.command {
         Some(Commands::Quote { ticker, filter_pct}) => {
             let provider = yahoo::YahooConnector::new();
-            let response = tokio_test::block_on(provider.get_quote_history(ticker, START, END)).unwrap();
+            let response = tokio_test::block_on(provider.expect("REASON").get_quote_history(ticker, START, END)).unwrap();
             let quotes = response.quotes().unwrap();
             println!("got quotes for {} days", quotes.len());
             println!("{0: <11} | {1: <10} | {2: <9}", "date", "close", "pct");
@@ -85,11 +85,11 @@ fn main() {
             let closes = get_closes_for_tickers(tickers);
             let (tx, rx) = mpsc::channel();
 
-            for b in 10u8..50 {
+            for b in 10u8..80 {
                 let buy_when = f32::from(b) * 0.1;
                 for s in 10u8..80 {
                     let sell_when = f32::from(s) * 0.1;
-                    for buy_increment in [1000.0, 3333.0, 5000.0, 10000.0, 20000.0, 33333.0, 50000.0, 100000.0 as f32] {
+                    for buy_increment in [1000.0, 3333.33, 5000.0, 10000.0, 20000.0, 33333.33, 50000.0, 100000.0 as f32] {
                         let tx = tx.clone();
                         let quotes = quotes.clone();
                         let closes = closes.clone();
@@ -144,7 +144,7 @@ fn get_closes_for_tickers(tickers: &Vec<String>) -> HashMap<String, f32> {
     let provider = yahoo::YahooConnector::new();
     let mut closes: HashMap<String, f32> = HashMap::new();
     for t in tickers.iter() {
-        let response = tokio_test::block_on(provider.get_latest_quotes(t, "1d")).unwrap();
+        let response = tokio_test::block_on(provider.as_ref().expect("REASON").get_latest_quotes(t, "1d")).unwrap();
         let quote = response.last_quote().unwrap();
         closes.insert(t.to_string(), quote.close as f32);
     }
@@ -155,7 +155,7 @@ fn get_quotes_for_tickers(tickers: &Vec<String>) -> Vec<TickeredQuote> {
     let mut all_quotes: Vec<TickeredQuote> = Vec::new();
     for t in tickers.iter() {
         let provider = yahoo::YahooConnector::new();
-        let response = tokio_test::block_on(provider.get_quote_history(t, START, END)).unwrap();
+        let response = tokio_test::block_on(provider.expect("REASON").get_quote_history(t, START, END)).unwrap();
         let quotes = response.quotes().unwrap();
         for q in quotes.iter() {
             all_quotes.push( TickeredQuote{
@@ -237,7 +237,7 @@ fn get_latest_change(ticker: &String) -> f32 {
     let provider = yahoo::YahooConnector::new();
     let start = time::OffsetDateTime::now_utc() - Duration::from_secs(60 * 60 * 24 * 7); // now - 1wk
     let end = time::OffsetDateTime::now_utc();
-    let response = tokio_test::block_on(provider.get_quote_history(ticker, start, end)).unwrap();
+    let response = tokio_test::block_on(provider.expect("REASON").get_quote_history(ticker, start, end)).unwrap();
     let quotes = response.quotes().unwrap();
     let previous = quotes.iter().nth(quotes.len() - 2).unwrap();
     let current = quotes.iter().last().unwrap();
